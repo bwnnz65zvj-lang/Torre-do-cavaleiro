@@ -491,35 +491,66 @@ $('#knightClip').onchange=()=>{knightSelected=$('#knightClip').value;knight.elap
 $('#inspect').onclick=()=>{if(mapEditing)setMapMode(false);workshopMode(!inspecting)};$('#potion').onclick=heal;$('#restart').onclick=()=>{workshopMode(false);reset()};$('#again').onclick=()=>{workshopMode(false);reset()};canvas.addEventListener('pointerdown',pointer);canvas.addEventListener('wheel',e=>{if(mapEditing||inspecting)return;e.preventDefault();gameZoom=Math.max(10,Math.min(22,gameZoom+Math.sign(e.deltaY)*.6));resize()},{passive:false});addEventListener('resize',resize);addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName))return;if(e.code==='Space'&&!mapEditing&&!inspecting&&!inventoryOpen){e.preventDefault();heal()}if(e.code==='KeyR'&&!mapEditing&&!inspecting)reset()});resize();vp=camera();updateFireLights();toast('Explore a cripta. I: mochila · Q: consagrar a lâmina (20 mana).');setupClassMenu();window.catacumbas={get state(){return {hp:hero.hp,kills,gold,potions,ended,inspecting,mapEditing,clip:knight.lastClip}},reset};requestAnimationFrame(frame);
 }catch(e){showError(e);throw e}
 
-// First online milestone: shared village presence; combat remains offline.
-let onlineSocket=null,onlineID=null,onlinePeers=new Map(),onlineTimer=null;
+// Cooperative prototype: room simulation runs on the server; local player prediction.
+let onlineSocket=null,onlineID=null,onlinePeers=new Map(),onlineTimer=null,onlinePickups=new Map(),onlineWon=false;
 const panel=document.createElement('div');panel.style.cssText='position:fixed;left:14px;top:105px;z-index:8;max-width:250px;padding:12px;background:#161810ee;border:1px solid #82704b;color:#e6d2ac;font:13px Georgia';
-panel.innerHTML='<b>Vila online · até 4 jogadores</b><div style="margin:8px 0"><input id="onlineName" aria-label="Seu nome" maxlength="20" placeholder="Seu nome" style="width:95px"><input id="onlineRoom" aria-label="Código da sala" maxlength="24" value="amigos" style="width:85px"></div><button id="onlineJoin">Entrar na sala</button><p id="onlineStatus" style="margin:8px 0 0">Escolha sua classe. Use a mesma sala que seus amigos.</p>';
+panel.innerHTML='<b>Cripta cooperativa · até 4 jogadores</b><div style="margin:8px 0"><input id="onlineName" aria-label="Seu nome" maxlength="20" placeholder="Seu nome" style="width:95px"><input id="onlineRoom" aria-label="Código da sala" maxlength="24" value="amigos" style="width:85px"></div><button id="onlineJoin">Entrar na sala</button><p id="onlineStatus" style="margin:8px 0 0">Escolha sua classe. Use a mesma sala que seus amigos.</p>';
 document.body.appendChild(panel);
 function onlineStatus(t){document.getElementById('onlineStatus').textContent=t}
-function leaveOnline(){clearInterval(onlineTimer);onlineTimer=null;let s=onlineSocket;onlineSocket=null;if(s)s.close();for(let p of onlinePeers.values())p.el.remove();onlinePeers.clear();onlineID=null;document.getElementById('onlineJoin').textContent='Entrar na sala'}
+function onlineSend(m){if(onlineSocket?.readyState===1)onlineSocket.send(JSON.stringify(m))}
+function clearOnlineEnemies(){for(let e of enemies)e.el.remove();enemies=[];drops=[];enemySpells=[];attackTarget=null;strikeTarget=null}
+function removeOnlineBarrels(){barrels=[];barrelCells.clear()}
+function leaveOnline(){clearInterval(onlineTimer);onlineTimer=null;let s=onlineSocket;onlineSocket=null;if(s)s.close();for(let p of onlinePeers.values())p.el.remove();onlinePeers.clear();onlinePickups.clear();onlineID=null;onlineWon=false;document.getElementById('onlineJoin').textContent='Entrar na sala';soloReset();}
+function applyOnlineLocation(p){if(currentMap!==p.map){soloSwitchMap(p.map);clearOnlineEnemies()}hero.x=p.x;hero.z=p.z;hero.hp=p.hp;path=[];attackTarget=null;strikeTarget=null;hero.moving=false;hero.swing=0;camX=p.x;camZ=p.z-1;ended=false;clearTimeout(endTimer);$('#modal').style.display='none';travelCooldown=1.5;removeOnlineBarrels();updateHUD()}
+function applyOnlineWorld(w){if(!w||currentMap!=='crypt')return;
+ const existing=new Map(enemies.map(e=>[e.id,e])),next=[];
+ for(let data of w.enemies){let e=existing.get(data.id);if(!e){e=data.caster?spawnSorcerer(data.x,data.z):spawn(data.x,data.z,data.boss);e.id=data.id}let prev=e.emergence?.state;Object.assign(e,data);if(e.emergence?.state==='rising'&&prev==='buried')graveBurst(e,30);next.push(e)}
+ for(let [id,e] of existing)if(!next.some(a=>a.id===id)){magicImpact(e.x,1,e.z);e.el.remove();if(attackTarget===e)attackTarget=null;if(strikeTarget===e)strikeTarget=null}
+ enemies=next;drops=w.drops.map(d=>({...d}));kills=w.kills;bossSpawned=w.bossSpawned;won=w.won;
+ enemySpells=w.spells.map(s=>({...s,trail:[]}));if(w.won&&!onlineWon){onlineWon=true;toast('Vitória em grupo! O Carcereiro caiu. Recolham os tesouros.')}updateHUD();
+}
+function applyOnlinePlayers(m){let present=new Set();for(let p of m.players){
+ if(p.id===onlineID){let oldHP=hero.hp;hero.hp=p.hp;potions=p.potions;if(p.hp<oldHP)hero.flash=.22;if(p.hp<=0&&!ended){finish(false);$('#endText').textContent='Você caiu. Clique em Jogar novamente para renascer na vila e voltar ao grupo.'}updateHUD();continue}
+ present.add(p.id);let peer=onlinePeers.get(p.id);if(!peer){let el=document.createElement('div');el.style.cssText='position:absolute;color:#cce5b1;font:12px Georgia;text-shadow:0 2px 4px black;pointer-events:none;transform:translate(-50%,-100%)';document.getElementById('labels').appendChild(el);peer={x:p.x,z:p.z,el,model:null,kind:p.kind};onlinePeers.set(p.id,peer)}if(peer.target?.map!==p.map){peer.x=p.x;peer.z=p.z}peer.target=p;peer.el.textContent=p.name+(p.hp<=0?' · caiu':'');peer.el.hidden=p.map!==currentMap;
+ }for(let [id,p] of onlinePeers)if(!present.has(id)){p.el.remove();onlinePeers.delete(id)}
+ applyOnlineWorld(m.world);onlineStatus('Sala '+document.getElementById('onlineRoom').value+' · '+m.players.length+'/4 · '+(currentMap==='crypt'?'cripta cooperativa':'vila'));
+}
 document.getElementById('onlineJoin').onclick=()=>{
- if(onlineSocket){leaveOnline();onlineStatus('Você saiu. Modo solo disponível.');return}
+ if(onlineSocket){leaveOnline();onlineStatus('Você saiu. Uma aventura solo foi iniciada.');return}
  if(classMenuOpen){onlineStatus('Escolha Paladino ou Arqueiro primeiro.');return}
  if(!/^https?:$/.test(location.protocol)){onlineStatus('Abra pelo endereço do Render para jogar online.');return}
  let room=document.getElementById('onlineRoom').value.trim();if(!/^[a-zA-Z0-9-]{1,24}$/.test(room)){onlineStatus('Sala: letras, números e hífen, até 24 caracteres.');return}
- if(currentMap!=='village')switchMap('village');if(mapEditing)setMapMode(false);if(inspecting)workshopMode(false);
+ if(mapEditing)soloMapMode(false);if(inspecting)workshopMode(false);soloReset();
  onlineStatus('Conectando…');let s=new WebSocket(location.origin.replace(/^http/,'ws')+'/online?room='+encodeURIComponent(room));onlineSocket=s;document.getElementById('onlineJoin').textContent='Sair da sala';
- s.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}if(m.type==='welcome'){onlineID=m.id;onlineStatus('Conectado · sala '+room+' · exploração da vila');return}if(m.type!=='players')return;
- let present=new Set();for(let p of m.players){if(p.id===onlineID)continue;present.add(p.id);let peer=onlinePeers.get(p.id);if(!peer){let el=document.createElement('div');el.style.cssText='position:absolute;color:#cce5b1;font:12px Georgia;text-shadow:0 2px 4px black;pointer-events:none;transform:translate(-50%,-100%)';document.getElementById('labels').appendChild(el);peer={x:p.x,z:p.z,el,model:null,kind:p.kind};onlinePeers.set(p.id,peer)}Object.assign(peer,{target:p});peer.el.textContent=p.name}
- for(let [id,p] of onlinePeers)if(!present.has(id)){p.el.remove();onlinePeers.delete(id)}onlineStatus('Sala '+room+' · '+m.players.length+'/4 jogadores · vila');};
+ s.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}
+ if(m.type==='welcome'){if(m.version!==2){leaveOnline();onlineStatus('Atualize também o servidor no Render.');return}onlineID=m.id;applyOnlineLocation(m.player);onlineStatus('Conectado. Siga ao norte para entrar na cripta.');return}
+ if(m.type==='players'){applyOnlinePlayers(m);return}
+ if(m.type==='travel'||m.type==='correct'){applyOnlineLocation(m.player);return}
+ if(m.type==='reward'){let d=m.drop;onlinePickups.delete(d.id);drops=drops.filter(a=>a.id!==d.id);if(d.type==='gold')gold+=d.amount;else if(d.type==='manaPotion')manaPotions++;else if(d.type!=='potion'){let type=selectedClass==='archer'?({sword:'bow',axe:'longbow'}[d.type]||d.type):d.type;if(ITEM_DEFS[type])inventory.push({...ITEM_DEFS[type],id:d.id})}if(lootTarget?.id===d.id)lootTarget=null;toast('Item recolhido pelo seu personagem.');renderInventory();updateHUD()}
+ };
  s.onerror=()=>onlineStatus('Não foi possível conectar. Tente novamente.');s.onclose=e=>{if(onlineSocket===s){leaveOnline();onlineStatus(e.reason||'Conexão encerrada. Clique para reconectar.')}};
- onlineTimer=setInterval(()=>{if(s.readyState===1&&hero&&!classMenuOpen)s.send(JSON.stringify({type:'state',x:hero.x,z:hero.z,angle:renderAngle,moving:hero.moving,kind:selectedClass,name:document.getElementById('onlineName').value||'Aventureiro'}))},100);
+ onlineTimer=setInterval(()=>{if(!onlineID||!hero||classMenuOpen)return;const stats=combatStats();onlineSend({type:'state',x:hero.x,z:hero.z,map:currentMap,angle:renderAngle,moving:hero.moving,swing:hero.swing,kind:selectedClass,attack:stats.attack,defense:stats.defense,name:document.getElementById('onlineName').value||'Aventureiro'})},100);
 };
-const soloSwitchMap=switchMap;switchMap=function(target){if(onlineSocket&&target!=='village'){toast('Teste online: explore a vila com seus amigos. Saia da sala para entrar na cripta.');return}return soloSwitchMap(target)};
-const soloMapMode=setMapMode;setMapMode=function(on){if(on&&onlineSocket){toast('Saia da sala para editar o mapa.');return}return soloMapMode(on)};
+const soloSwitchMap=switchMap,soloMapMode=setMapMode,soloReset=reset,soloUpdateEnemies=updateEnemies,soloUpdateSpells=updateEnemySpells,soloEmergence=updateSkeletonEmergence,soloHurtEnemy=hurtEnemy,soloTakeLoot=takeLoot,soloHeal=heal,soloOpenClass=openClassMenu;
+switchMap=function(target){if(onlineSocket){if(target===currentMap)return;if(!onlineID)return;onlineSend({type:'state',x:hero.x,z:hero.z,map:currentMap,angle:hero.angle,moving:false,kind:selectedClass,name:document.getElementById('onlineName').value});onlineSend({type:'travel'});travelCooldown=1.5;return}return soloSwitchMap(target)};
+setMapMode=function(on){if(on&&onlineSocket){toast('Saia da sala para editar o mapa.');return}return soloMapMode(on)};
+reset=function(){if(onlineSocket){if(hero.hp<=0){onlineSend({type:'revive'});return}toast('Saia da sala para reiniciar a aventura solo.');return}return soloReset()};
+openClassMenu=function(){if(onlineSocket){toast('Saia da sala para trocar de personagem.');return}return soloOpenClass()};
+updateEnemies=function(dt){if(!onlineSocket)return soloUpdateEnemies(dt)};
+updateEnemySpells=function(dt){if(!onlineSocket)return soloUpdateSpells(dt)};
+updateSkeletonEmergence=function(dt){if(!onlineSocket)return soloEmergence(dt);graveDebris=graveDebris.filter(d=>(d.life-=dt)>0);for(let d of graveDebris){d.x+=d.vx*dt;d.z+=d.vz*dt;d.y=Math.max(.035,d.y+d.vy*dt);d.vy-=8.5*dt}};
+hurtEnemy=function(e,hit=null){if(!onlineSocket)return soloHurtEnemy(e,hit);if(!e||e.isBarrel)return;let holy=hit?hit.holy:hero.blessed;onlineSend({type:'attack',id:e.id,holy});if(!hit&&holy){hero.blessed=false;updateOrbs()}};
+takeLoot=function(d){if(!onlineSocket)return soloTakeLoot(d);if(!d||inventory.length>=16&&ITEM_DEFS[d.type])return false;let now=performance.now();if(now-(onlinePickups.get(d.id)||-10000)<1500)return false;onlinePickups.set(d.id,now);onlineSend({type:'pickup',id:d.id});return false};
+heal=function(){if(!onlineSocket)return soloHeal();onlineSend({type:'heal'})};
 const soloKnight=drawKnight,soloArcher=drawImportedArcher;
-function drawOnlinePeers(dt){if(!onlineID||inspecting||currentMap!=='village')return;
+function drawOnlinePeers(dt){if(!onlineID||inspecting)return;
  const saved={hero,renderAngle,knight,importedArcher,attackTarget};
- try{for(let p of onlinePeers.values()){let t=p.target;if(!t)continue;p.x+=(t.x-p.x)*(1-Math.exp(-dt*14));p.z+=(t.z-p.z)*(1-Math.exp(-dt*14));if(!p.model||p.kind!==t.kind){let base=t.kind==='archer'?saved.importedArcher:saved.knight;p.model={...base,current:base.base.map(v=>({t:v.t.slice(),q:v.q.slice(),s:v.s.slice(),m:v.m})),elapsed:0,lastClip:''};p.kind=t.kind}
- hero={x:p.x,z:p.z,hp:100,swing:0,flash:0,moving:t.moving,angle:t.angle};renderAngle=t.angle;attackTarget=null;
+ try{for(let p of onlinePeers.values()){let t=p.target;if(!t)continue;if(t.map!==currentMap){p.el.hidden=true;continue}p.x+=(t.x-p.x)*(1-Math.exp(-dt*14));p.z+=(t.z-p.z)*(1-Math.exp(-dt*14));if(!p.model||p.kind!==t.kind){let base=t.kind==='archer'?saved.importedArcher:saved.knight;p.model={...base,current:base.base.map(v=>({t:v.t.slice(),q:v.q.slice(),s:v.s.slice(),m:v.m})),elapsed:0,lastClip:''};p.kind=t.kind}
+ hero={x:p.x,z:p.z,hp:t.hp,swing:t.swing||0,attackDuration:t.kind==='archer'?.72:35/30,flash:0,moving:t.moving,angle:t.angle};renderAngle=t.angle;attackTarget=null;
  if(t.kind==='archer'){importedArcher=p.model;soloArcher(dt)}else{knight=p.model;soloKnight(dt)}let pos=project(p.x,2.8,p.z);p.el.style.left=pos[0]+'px';p.el.style.top=pos[1]+'px';p.el.hidden=mapEditing;
  }}finally{hero=saved.hero;renderAngle=saved.renderAngle;knight=saved.knight;importedArcher=saved.importedArcher;attackTarget=saved.attackTarget}}
 drawKnight=function(dt){soloKnight(dt);drawOnlinePeers(dt)};drawImportedArcher=function(dt){soloArcher(dt);drawOnlinePeers(dt)};
+// Bind the original potion button to the new network-aware function.
+$('#potion').onclick=()=>heal();
 
 </script></html>
