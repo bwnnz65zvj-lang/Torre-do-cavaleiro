@@ -1,9 +1,10 @@
 import http from 'node:http';
-import {createReadStream} from 'node:fs';
+import {createReadStream,existsSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {WebSocketServer} from 'ws';
-const page=fileURLToPath(new URL('./public/index.html',import.meta.url));
+const assetRoot=existsSync(fileURLToPath(new URL('./public/index.html',import.meta.url)))?'./public/':'./';
+const page=fileURLToPath(new URL(assetRoot+'index.html',import.meta.url));
 const server=http.createServer((req,res)=>{
  if(req.url==='/health'){res.writeHead(200,{'Content-Type':'application/json'});return res.end('{"ok":true}')}
  const path=req.url.split('?')[0];
@@ -11,7 +12,7 @@ const server=http.createServer((req,res)=>{
  const isPage=path==='/'||path==='/index.html';
  if(!isPage&&!assets.has(path)){res.writeHead(404);return res.end('Not found')}
  res.writeHead(200,{'Content-Type':isPage?'text/html; charset=utf-8':'text/javascript; charset=utf-8','Cache-Control':'no-cache'});
- createReadStream(isPage?page:fileURLToPath(new URL('./public'+path,import.meta.url))).on('error',()=>res.destroy()).pipe(res);
+ createReadStream(isPage?page:fileURLToPath(new URL(assetRoot+path.slice(1),import.meta.url))).on('error',()=>res.destroy()).pipe(res);
 });
 const rooms=new Map(),wss=new WebSocketServer({server,path:'/online',maxPayload:1024});
 const send=(ws,data)=>{if(ws.readyState===1&&ws.bufferedAmount<65536)ws.send(JSON.stringify(data))};
