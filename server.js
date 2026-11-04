@@ -22,14 +22,19 @@ wss.on('connection',(ws,req)=>{
  const code=new URL(req.url,'http://localhost').searchParams.get('room')||'';
  if(!/^[a-zA-Z0-9-]{1,24}$/.test(code)){ws.close(1008,'Sala inválida');return}
  let room=rooms.get(code);
- if(!room){if(rooms.size>=30){ws.close(1013,'Servidor cheio');return}room={players:new Map(),world:sim.makeWorld()};rooms.set(code,room)}
+ if(!room){if(rooms.size>=30){ws.close(1013,'Servidor cheio');return}room={players:new Map(),world:sim.makeWorld(),chat:[]};rooms.set(code,room)}
  if(room.players.size>=4){ws.close(1008,'Sala cheia (4 jogadores)');return}
- const id=randomUUID(),p={id,x:32,z:40,map:'village',hp:100,angle:0,moving:false,kind:'paladin',name:'Aventureiro',swing:0,potions:3,mana:100,attack:30,defense:0,lastAttack:0,lastMove:Date.now(),lastTravel:0};
+ const id=randomUUID(),p={id,x:32,z:40,map:'village',hp:100,angle:0,moving:false,kind:'paladin',name:'Aventureiro',swing:0,potions:3,mana:100,attack:30,defense:0,lastAttack:0,lastChat:0,lastMove:Date.now(),lastTravel:0};
  room.players.set(ws,p);ws.alive=true;let messages=0,second=Date.now();
- ws.on('pong',()=>ws.alive=true);send(ws,{type:'welcome',id,version:2,player:publicPlayer(p)});
+ ws.on('pong',()=>ws.alive=true);send(ws,{type:'welcome',id,version:2,player:publicPlayer(p)});send(ws,{type:'chatHistory',messages:room.chat});
  ws.on('message',raw=>{const now=Date.now();if(now-second>1000){messages=0;second=now}if(++messages>50){ws.close(1008,'Muitas mensagens');return}try{
  const m=JSON.parse(raw);
- if(m.type==='state'){
+ if(m.type==='chat'){
+ const text=String(m.text||'').replace(/[\u0000-\u001f\u007f]/g,' ').trim().slice(0,180);
+ if(!text||now-p.lastChat<1000)return;p.lastChat=now;
+ const message={name:p.name,text};room.chat.push(message);if(room.chat.length>30)room.chat.shift();
+ for(const peer of room.players.keys())send(peer,{type:'chat',message});
+ }else if(m.type==='state'){
  if(![m.x,m.z,m.angle].every(Number.isFinite))return;
  const delta=Math.hypot(m.x-p.x,m.z-p.z),elapsed=Math.min(.5,(now-p.lastMove)/1000),validMap=m.map===p.map;
  const within=p.map==='crypt'?m.x>=1&&m.x<65&&m.z>=1&&m.z<65&&sim.sight(p,m):m.x>=17&&m.x<=49&&m.z>=20&&m.z<=54;
